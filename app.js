@@ -1,7 +1,12 @@
 {
 const tg=window.Telegram&&Telegram.WebApp&&Telegram.WebApp.initData!==undefined?Telegram.WebApp:null;
 const CATS={all:"Все",stock:"В наличии",auto:"Авто",home:"Дом и быт",repair:"Ремонт и инструменты",health:"Здоровье и уход",kids:"Дети",todo:"Не пройдено"};
-let P=[],done={},filter="all",query="";
+let P=[],done={},filter="all",query="",me="";
+const API=String(window.STIM_API||"").trim();
+function send(event,extra){
+  if(!API||!tg||!tg.initData)return Promise.resolve(null);
+  return fetch(API,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({initData:tg.initData,event,...(extra||{})}),keepalive:true}).then(r=>r.json()).catch(()=>null);
+}
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const norm=s=>String(s||"").toLowerCase().replace(/ё/g,"е").replace(/\s+/g," ").trim();
@@ -40,7 +45,7 @@ function photo(p,big){
 function hay(p){return norm([p.name,p.subtitle,CATS[p.cat],p.table.flat().join(" "),p.notes.join(" "),p.objections.flat().join(" "),p.script.map(s=>s[1]).join(" ")].join(" "))}
 function updProg(){
   const n=P.filter(p=>done[p.id]).length;
-  $("#progtxt").textContent=`Пройдено ${n} из ${P.length}`;
+  $("#progtxt").textContent=(me?me+" · ":"")+`Пройдено ${n} из ${P.length}`;
   $("#progbar").style.width=(P.length?n/P.length*100:0)+"%";
 }
 function renderChips(){
@@ -75,7 +80,7 @@ function makeQuiz(p){
 }
 function product(id){
   const p=P.find(x=>x.id===id); if(!p){location.hash="";return}
-  if(cur!==id){cur=id;step=0;answers={};p._quiz=makeQuiz(p)}
+  if(cur!==id){cur=id;step=0;answers={};p._quiz=makeQuiz(p);send("открыл товар",{productId:p.id,product:p.name})}
   document.title=p.name+" — обучение";
   $("#searchbox").hidden=true;$("#chips").hidden=true;
   if(tg)tg.BackButton.show();
@@ -116,12 +121,33 @@ document.addEventListener("click",e=>{
   if(e.target.closest("#retry")){answers={};const p=P.find(x=>x.id===cur);p._quiz=makeQuiz(p);product(cur);return}
   const o=e.target.closest(".opt");if(o){const p=P.find(x=>x.id===cur),i=+o.dataset.q,q=p._quiz[i];answers[i]=q.o[+o.dataset.o];
     haptic(answers[i]===q.a?"success":"error");
-    const qs=p._quiz;if(qs.every((q,k)=>answers[k]!=null)&&qs.every((q,k)=>answers[k]===q.a))markDone(cur);product(cur);return}
+    const qs=p._quiz;if(qs.every((q,k)=>answers[k]!=null)){const sc=qs.filter((q,k)=>answers[k]===q.a).length,ok=sc===qs.length;
+      send("проверка",{productId:p.id,product:p.name,result:`${sc}/${qs.length} ${ok?"сдал":"не сдал"}`});if(ok)markDone(cur)}
+    product(cur);return}
 });
 $("#q").addEventListener("input",e=>{query=e.target.value;list()});
 addEventListener("hashchange",route);
-fetch("products.json?v="+Date.now(),{cache:"no-store"}).then(r=>r.json()).then(d=>{
-  P=d.filter(p=>p&&p.name&&!p.hidden).map(fill).filter(p=>p.ready).sort((a,b)=>(a.row||999)-(b.row||999));
-  P.forEach(p=>p._h=hay(p));updProg();route()})
- .catch(()=>{$("#app").innerHTML='<div class="empty">Не удалось загрузить список товаров. Проверьте интернет и откройте снова.</div>'});
+function screen(title,text,btn){
+  $("#searchbox").hidden=true;$("#chips").hidden=true;
+  $("#app").innerHTML=`<div class="gate"><h2>${esc(title)}</h2><p>${text}</p>${btn?`<button class="btn primary" id="again">${esc(btn)}</button>`:""}</div>`;
+}
+function load(){
+  fetch("products.json?v="+Date.now(),{cache:"no-store"}).then(r=>r.json()).then(d=>{
+    P=d.filter(p=>p&&p.name&&!p.hidden).map(fill).filter(p=>p.ready).sort((a,b)=>(a.row||999)-(b.row||999));
+    P.forEach(p=>p._h=hay(p));updProg();route()})
+   .catch(()=>{$("#app").innerHTML='<div class="empty">Не удалось загрузить список товаров. Проверьте интернет и откройте снова.</div>'});
+}
+function gate(){
+  if(!API){load();return}
+  if(!tg||!tg.initData){screen("Откройте через Telegram","Обучение доступно только сотрудникам. Откройте бота <b>@stim_obuchenie_bot</b> и нажмите кнопку «Обучение».");return}
+  screen("Проверяю доступ…","Секунду.");
+  send("вход").then(r=>{
+    if(r&&r.ok){me=String(r.name||"");load();return}
+    if(r&&r.reason==="not_allowed"){const u=tg.initDataUnsafe&&tg.initDataUnsafe.user||{};
+      screen("Нет доступа",`Вас ещё нет в списке сотрудников. Отправьте руководителю ваш Telegram ID: <b>${esc(r.id||u.id||"")}</b>${(r.username||u.username)?` и ник <b>@${esc(r.username||u.username)}</b>`:""}. Когда вас добавят, откройте обучение снова.`,"Проверить ещё раз");return}
+    screen("Не удалось проверить доступ","Проверьте интернет и попробуйте ещё раз.","Попробовать снова");
+  });
+}
+document.addEventListener("click",e=>{if(e.target.closest("#again"))gate()});
+gate();
 }
